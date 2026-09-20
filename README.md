@@ -11,7 +11,7 @@
 8. [Assignment](#assignment-telemetry)
 9. [Resources](#resources)
 10. [Contributing](#contributing)
-11. [Appendix A: Kubernetes Distribution (k0s)](#appendix-a-environment-setup) 
+11. [Appendix A: Kubernetes Distribution (k0s)](#appendix-a-environment-setup)
 
 ---
 
@@ -147,11 +147,11 @@ You can customize deployments by editing `values.yaml`, passing parameters with 
 - Steps:
   1. Using the locally provided Helm chart we can install the custom nginx application:
 	  ```bash
-	  helm install ciao-app helm/ --set customText="ciao!" -n ciao-app --create-namespace
+	  helm install ciao-app helm/ --set customText='ciao!' -n ciao-app --create-namespace
 	  ```
   2. Install another version of the application:
 	  ```bash
-	  helm install hello-app helm/ --set customText="hello!" -n hello-app --create-namespace
+	  helm install hello-app helm/ --set customText='hello!' -n hello-app --create-namespace
 	  ```
   3. Verify deployment:
 	  ```bash
@@ -167,7 +167,7 @@ You can customize deployments by editing `values.yaml`, passing parameters with 
 	  curl $ciaoIP
 
 	  helloIP=$(kubectl get po -n hello-app -o jsonpath="{.items[*].status.podIP}")
-	  curl $helloIP	  
+	  curl $helloIP
 	  ```
 
 #### Bonus: Modify the Custom Chart
@@ -177,7 +177,7 @@ You can customize deployments by editing `values.yaml`, passing parameters with 
 	3. Customize the *templates/configmap.yaml* by including the variable *customPage* between *<title>* and *</title>*. Use the line with `<h1>{{ .Values.customText }}</h1>` as an example.
 	4. Install with
 		```bash
-		helm install goodbye-app helm/ --set customPage="Goodbye!" --set customText="goodbye!" -n goodbye-app --create-namespace
+		helm install goodbye-app helm/ --set customPage='Goodbye!' --set customText='goodbye!' -n goodbye-app --create-namespace
 		```
 	   and verify the applied changes worked with:
 	   ```bash
@@ -395,6 +395,9 @@ This is a simplified example taken from https://kiali.io/docs/tutorials/travels/
 
   3. **Visualize traffic and traces in Kiali UI:**
 	  - Once the pods are running and traffic is generated, open the Kiali dashboard and explore the Traffic Graph and Traces tabs. You should see multiple services interacting, with traces showing request flows across namespaces.
+	  - Select all three `travel-*` namespaces in the *Namespace* menu with *Last 5m* and *Every 10s* refresh to see live traffic. The Traffic Graph should look similar to the following:
+
+	  ![Kiali Traffic Graph for the travels demo](Kiali-graph-screen.png)
 
   4. **Check mTLS status:**
 	  - In Kiali, verify if mTLS is enabled by looking for the lock icon on service links. This should be enabled by default.
