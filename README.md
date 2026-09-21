@@ -553,6 +553,14 @@ If you cannot access the UIs, check that your cluster nodes are reachable and th
   3. **Access Prometheus and Grafana UIs**
 	  - Use the commands above to retrieve the NodePort URLs. Open the Grafana URL in your browser.
 	  - Default login: `admin` / `admin` (unless changed during install).
+	  - You can also retrieve the actual Grafana credentials from the `grafana` secret:
+		```bash
+		# Grafana username
+		kubectl get secrets grafana -o json | jq -r '.data."admin-user"' | base64 -d
+
+		# Grafana password
+		kubectl get secrets grafana -o json | jq -r '.data."admin-password"' | base64 -d
+		```
 
   4. **Add Prometheus as a Data Source in Grafana**
 	  - In Grafana, go to **Connection → Data Sources → Add data source**.
@@ -930,6 +938,15 @@ To automate your lab environment setup and avoid common issues, use the unified 
    ./infra/k0s.sh setup
    ```
    This will stop Docker, clean up iptables, install and start k0s, and configure your kubeconfig.
+
+   Optionally, enable shell completion and handy aliases for the current user:
+   ```bash
+   echo "source /usr/share/bash-completion/bash_completion" >> ~/.bashrc
+   echo "source <(kubectl completion bash)" >> ~/.bashrc
+   echo "source <(helm completion bash)" >> ~/.bashrc
+   echo "alias k=kubectl" >> ~/.bashrc
+   echo "complete -F __start_kubectl k" >> ~/.bashrc
+   ```
 
 #### Case 2 - Restart k0s after a reboot
 
