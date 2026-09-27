@@ -1,0 +1,21 @@
+# MetalLB address pool for L2 (layer 2) mode.
+# The range MUST belong to the same subnet as your cluster nodes.
+# Find your node subnet with: kubectl get nodes -o wide  (look at INTERNAL-IP)
+# Then pick a few free addresses in that subnet (adjust the range below).
+apiVersion: metallb.io/v1beta1
+kind: IPAddressPool
+metadata:
+  name: telemetry-pool
+  namespace: metallb-system
+spec:
+  addresses:
+    - 172.24.223.240-172.24.223.250
+---
+apiVersion: metallb.io/v1beta1
+kind: L2Advertisement
+metadata:
+  name: telemetry-l2
+  namespace: metallb-system
+spec:
+  ipAddressPools:
+    - telemetry-pool

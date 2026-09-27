@@ -255,6 +255,8 @@ Istio is a popular open-source service mesh that provides advanced traffic manag
 	  istioctl install --set profile=minimal -y # Installs Istio with the minimal profile, suitable for labs and quick demos.
 	  ```
 
+	  > **Note:** Installing Istio also registers the `istio` **GatewayClass**, which is required by the optional [Gateway API section](#optional-expose-prometheus-and-grafana-with-the-gateway-api) of Module 3. If you previously uninstalled Istio (e.g. via `istioctl uninstall --purge`), the GatewayClass is removed too, so you must re-run `istioctl install --set profile=minimal -y` before creating any `Gateway` resource.
+
 	  **Verify installation:**
 	  ```bash
 	  kubectl get pods -n istio-system # Checks that Istio components are running in the `istio-system` namespace.
@@ -496,7 +498,7 @@ helm repo add grafana https://grafana.github.io/helm-charts
 helm repo update
 
 # Install Prometheus
-helm install prometheus prometheus-community/prometheus --set server.persistentVolume.enabled=false --set server.service.nodePort=30303 --set server.service.type=NodePort --set alertmanager.persistence.enabled=false
+helm install prometheus prometheus-community/prometheus --set server.persistentVolume.enabled=false --set server.service.nodePort=30303 --set server.service.type=NodePort --set alertmanager.persistence.enabled=false --set prometheus-node-exporter.hostRootFsMount.enabled=false
 
 # Install Grafana
 helm install grafana grafana/grafana --set adminPassword=admin --set service.type=NodePort --set service.nodePort=30405
@@ -641,6 +643,119 @@ Telemetry is a cornerstone of modern cloud-native operations, empowering teams t
 
 ---
 
+### Optional: Expose Prometheus and Grafana with the Gateway API
+
+Instead of exposing each service on its own NodePort, we can put both UIs behind a single entry point and route them by path: `/prometheus` and `/grafana`. To do this we use the **Kubernetes Gateway API**, the modern successor of the Ingress API. Since Istio was already installed in [Module 2](#module-2-service-mesh), we reuse it as the Gateway API implementation (`gatewayClassName: istio`). To give the Gateway a real external IP (instead of a NodePort) we install **MetalLB**, a software load balancer for bare-metal / self-managed clusters like k0s.
+
+> **Note:** The Gateway API defines resources such as `Gateway` (the entry point / listener) and `HTTPRoute` (the routing rules). These CRDs are **not** shipped with k0s by default, so we install them first.
+
+1. **Install the Gateway API CRDs (missing in k0s):**
+	 - This applies the standard channel CRDs (`GatewayClass`, `Gateway`, `HTTPRoute`, ...). The command is idempotent and skips the install if the CRDs are already present.
+	 ```bash
+	 kubectl get crd gateways.gateway.networking.k8s.io >/dev/null 2>&1 || \
+	   kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.2.1/standard-install.yaml
+	 ```
+	 Verify they are registered:
+	 ```bash
+	 kubectl get crd | grep gateway.networking.k8s.io
+	 ```
+
+2. **Install MetalLB (software LoadBalancer for k0s):**
+	 - k0s has no cloud provider, so `LoadBalancer` Services stay `<pending>` forever. MetalLB fills that gap by assigning real IPs from a pool you control.
+	 ```bash
+	 kubectl apply -f https://raw.githubusercontent.com/metallb/metallb/v0.14.8/config/manifests/metallb-native.yaml
+	 kubectl wait --namespace metallb-system \
+	   --for=condition=ready pod \
+	   --selector=app=metallb \
+	   --timeout=120s
+	 ```
+	 - Then give MetalLB a pool of addresses to hand out. The range must be in the **same subnet as your nodes**, so first work out that subnet and pick a few free addresses in it.
+
+	 **How to derive the address (e.g. `172.24.223.240`):**
+	 ```bash
+	 # 1. Read the node INTERNAL-IP and its CIDR prefix
+	 kubectl get nodes -o wide          # e.g. INTERNAL-IP = 172.24.222.74
+	 ip -4 addr show eth0 | grep inet   # e.g. inet 172.24.222.74/20  -> prefix /20
+
+	 # 2. Compute the subnet range from that IP/prefix
+	 #    172.24.222.74/20  ->  network 172.24.208.0  ->  broadcast 172.24.223.255
+	 ipcalc 172.24.222.74/20 2>/dev/null || \
+	   python3 -c "import ipaddress,sys; n=ipaddress.ip_interface('172.24.222.74/20').network; print('network',n.network_address,'broadcast',n.broadcast_address)"
+	 ```
+	 - Pick a small range near the **top** of the subnet (just below the broadcast address) that is unlikely to be used by DHCP — e.g. `172.24.223.240-172.24.223.250`. The single address you pin for the Gateway in step 4 (`172.24.223.240`) is simply the **first address of this pool**.
+	 - Edit [telemetry/metallb-pool.yaml](telemetry/metallb-pool.yaml) so the `addresses` range matches what you computed, then apply it:
+	 ```bash
+	 kubectl apply -f telemetry/metallb-pool.yaml
+	 ```
+	 > **WSL2 note:** the node IP (and therefore this subnet) can change when WSL restarts. If the endpoints stop working after a reboot, recompute the subnet and update the pool range, the Gateway `spec.addresses`, and the Prometheus `server.baseURL` to the new first address.
+
+3. **Reconfigure Prometheus and Grafana to serve under a sub-path:**
+	 - Serving an app under `/prometheus` or `/grafana` requires telling the app its base path; otherwise internal redirects and static assets (CSS/JS) break. We update the two releases in place with `helm upgrade --reuse-values`.
+	 - Prometheus additionally needs its full **external URL** (`--web.external-url`, set via `server.baseURL`); otherwise its UI redirects to `/query` at the root and loses the `/prometheus` prefix (you would get a 404). Use the IP you pinned for the Gateway in [telemetry/gateway.yaml](telemetry/gateway.yaml).
+	 ```bash
+	 # Grafana served under /grafana
+	 helm upgrade grafana grafana/grafana --reuse-values \
+	   --set "grafana\.ini.server.serve_from_sub_path=true" \
+	   --set "grafana\.ini.server.root_url=%(protocol)s://%(domain)s/grafana"
+
+	 # Prometheus served under /prometheus (route-prefix + external-url)
+	 # Replace 172.24.223.240 with the IP you pinned in telemetry/gateway.yaml
+	 helm upgrade prometheus prometheus-community/prometheus --reuse-values \
+	   --set server.prefixURL=/prometheus \
+	   --set server.baseURL=http://172.24.223.240/prometheus
+	 ```
+	 > After this change, Grafana no longer answers on `/` — it expects the `/grafana` prefix. The same applies to Prometheus and `/prometheus`.
+
+4. **Create the Gateway (entry point):**
+	 - Istio auto-provisions a Deployment and a `LoadBalancer` Service for this `Gateway`. Thanks to MetalLB, that Service gets a real external IP. We pin it via `spec.addresses` so Prometheus' external URL stays stable — adjust that value to a free address from your pool (see [telemetry/gateway.yaml](telemetry/gateway.yaml)).
+	 ```bash
+	 kubectl apply -f telemetry/gateway.yaml
+	 ```
+
+5. **Create the HTTPRoutes for each path:**
+	 - Each route forwards a path prefix to the corresponding backend Service (both live in the `default` namespace and listen on port `80`). The two routes are defined in [telemetry/httproutes.yaml](telemetry/httproutes.yaml).
+	 ```bash
+	 kubectl apply -f telemetry/httproutes.yaml
+	 ```
+
+6. **Verify and access:**
+	 - Check that the Gateway is `Programmed` and the routes are accepted, then read the external IP that MetalLB assigned to the auto-provisioned `telemetry-gateway-istio` Service.
+	 ```bash
+	 kubectl get gateway telemetry-gateway
+	 kubectl get httproute
+	 kubectl get svc telemetry-gateway-istio   # EXTERNAL-IP should be from your MetalLB pool
+
+	 export GW_IP=$(kubectl get svc telemetry-gateway-istio -o jsonpath="{.status.loadBalancer.ingress[0].ip}")
+	 echo "Prometheus: http://$GW_IP/prometheus"
+	 echo "Grafana:    http://$GW_IP/grafana"
+	 ```
+
+**Troubleshooting tips:**
+- If the `Gateway` stays `Not Programmed`, ensure the Gateway API CRDs are installed (step 1) and that Istio is running (`kubectl get pods -n istio-system`).
+- If `telemetry-gateway-istio` shows `EXTERNAL-IP: <pending>`, MetalLB is missing or its pool is wrong: verify the pods in `metallb-system` are running and that the pool range in [telemetry/metallb-pool.yaml](telemetry/metallb-pool.yaml) matches your node subnet.
+- If a page loads but assets are broken or you get redirect loops, re-check the sub-path settings in step 3 (`serve_from_sub_path` / `root_url` for Grafana, `server.prefixURL` for Prometheus).
+- Inspect route status with `kubectl describe httproute grafana` and `kubectl describe httproute prometheus`.
+
+**Clean up (optional):**
+Tear down in reverse order of creation — routes and gateway first, then the Helm releases, and finally MetalLB and the Gateway API CRDs if you no longer need them.
+```bash
+# 1. Gateway API resources
+kubectl delete -f telemetry/httproutes.yaml
+kubectl delete -f telemetry/gateway.yaml
+
+# 2. Helm releases (Prometheus + Grafana)
+helm delete grafana prometheus
+
+# 3. MetalLB (pool first, then the controller/speaker)
+kubectl delete -f telemetry/metallb-pool.yaml
+kubectl delete -f https://raw.githubusercontent.com/metallb/metallb/v0.14.8/config/manifests/metallb-native.yaml
+
+# 4. (optional) Gateway API CRDs
+kubectl delete -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.2.1/standard-install.yaml
+```
+
+---
+
 ## Module 4: Custom Operator Lab (Hello Operator)
 
 
@@ -687,7 +802,7 @@ kubectl get pods -l app=hello-operator
 
 #### 3. Create a Custom Resource
 ```bash
-kubectl apply -f operator/hello-francesco.yaml
+kubectl apply -f operator/hello-mario.yaml
 ```
 
 Check the custom resource you just created:
@@ -709,7 +824,7 @@ kubectl get configmap -l app=hello-operator -o yaml
 #### 4. Update the Hello resource (or add another Hello resource) and observe reconciliation.
 Copy the custom resource:
 ```bash
-cp operator/hello-francesco.yaml operator/hello-$USER.yaml
+cp operator/hello-mario.yaml operator/hello-$USER.yaml
 # Modify operator/hello-$USER.yaml
 kubectl apply -f operator/hello-$USER.yaml
 ```

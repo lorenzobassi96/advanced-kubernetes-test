@@ -1,6 +1,6 @@
 apiVersion: unusualfor.com/v1
 kind: Hello
 metadata:
-  name: francesco
+  name: mario
 spec:
-  name: Francesco
+  name: mario
